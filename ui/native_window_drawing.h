@@ -51,7 +51,6 @@ namespace native_window_drawing {
 	std::unique_ptr<surface> get_window_surface(native_window::window* wnd);
 	std::unique_ptr<surface> convert_to_8_bit_indexed(surface* s);
 	
-	std::unique_ptr<surface> load_image(const char* filename);
 	std::unique_ptr<surface> load_image(const void* data, size_t size);
 	
 	

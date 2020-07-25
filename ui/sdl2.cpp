@@ -3,18 +3,16 @@
 #include "native_sound.h"
 
 #include "common.h"
-#include "SDL.h"
-#ifndef OPENBW_NO_SDL_IMAGE
-#include "SDL_image.h"
-#endif
+#include <SDL.h>
 #ifndef OPENBW_NO_SDL_MIXER
-#include "SDL_mixer.h"
+#include <SDL_mixer.h>
 #endif
 
 #include <array>
 #include <cstdlib>
 #include <memory>
 #include <csignal>
+
 
 using bwgame::ui::log;
 using bwgame::ui::fatal_error;
@@ -24,9 +22,6 @@ namespace native_window {
 bool sdl_initialized = false;
 void sdl_init() {
 	if (!sdl_initialized) {
-#ifndef OPENBW_NO_SDL_IMAGE
-		IMG_Init(IMG_INIT_PNG);
-#endif
 		auto original_handler = signal(SIGINT, SIG_DFL);
 		if (SDL_Init(SDL_INIT_VIDEO) == 0) {
 			sdl_initialized = true;
@@ -322,28 +317,12 @@ void delete_palette(palette* pal) {
 	delete pal;
 }
 
-std::unique_ptr<surface> load_image(const char* filename) {
-#ifndef OPENBW_NO_SDL_IMAGE
-	auto* surf = IMG_Load(filename);
-	if (!surf) fatal_error("IMG_Load(%s) failed: %s", filename, IMG_GetError());
-	auto r = std::make_unique<sdl_surface>();
-	r->set(surf);
-	return std::unique_ptr<surface>(r.release());
-#else
-	return nullptr;
-#endif
-}
-
 std::unique_ptr<surface> load_image(const void* data, size_t size) {
-#ifndef OPENBW_NO_SDL_IMAGE
-	auto* surf = IMG_Load_RW(SDL_RWFromConstMem(data, (int)size), 1);
-	if (!surf) fatal_error("IMG_Load_RW(mem) failed: %s", IMG_GetError());
+	auto* surf = SDL_LoadBMP_RW(SDL_RWFromConstMem(data, (int)size), 1);
+	if (!surf) fatal_error("IMG_Load_RW(mem) failed: %s", SDL_GetError());
 	auto r = std::make_unique<sdl_surface>();
 	r->set(surf);
 	return std::unique_ptr<surface>(r.release());
-#else
-	return nullptr;
-#endif
 }
 
 }
@@ -363,20 +342,7 @@ void init() {
 	Mix_Init(0);
 	int freq = frequency;
 	if (freq == 0) {
-//#ifdef EMSCRIPTEN
-#if 0
-		freq = EM_ASM_INT_V({
-			var context;
-			try {
-				context = new AudioContext();
-			} catch (e) {
-				context = new webkitAudioContext();
-			}
-			return context.sampleRate;
-		});
-#else
 		freq = MIX_DEFAULT_FREQUENCY;
-#endif
 	}
 	Mix_OpenAudio(freq, MIX_DEFAULT_FORMAT, 2, 1024);
 	Mix_AllocateChannels(channels);
