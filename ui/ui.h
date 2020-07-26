@@ -404,37 +404,6 @@ void draw_frame_textured(const grp_t::frame_t& frame, const uint8_t* texture, bo
 	}
 }
 
-struct apm_t {
-	a_deque<int> history;
-	int current_apm = 0;
-	int last_frame_div = 0;
-	static const int resolution = 1;
-	void add_action(int frame) {
-		if (!history.empty() && frame / resolution == last_frame_div) {
-			++history.back();
-		} else {
-			if (history.size() >= 10 * 1000 / 42 / resolution) history.pop_front();
-			history.push_back(1);
-			last_frame_div = frame / 12;
-		}
-	}
-	void update(int frame) {
-		if (history.empty() || frame / resolution != last_frame_div) {
-			if (history.size() >= 10 * 1000 / 42 / resolution) history.pop_front();
-			history.push_back(0);
-			last_frame_div = frame / resolution;
-		}
-		if (frame % resolution) return;
-		if (history.size() == 0) {
-			current_apm = 0;
-			return;
-		}
-		int sum = 0;
-		for (auto& v : history) sum += v;
-		current_apm = (int)(sum * ((int64_t)256 * 60 * 1000 / 42 / resolution) / history.size() / 256);
-	}
-};
-
 struct ui_util_functions: replay_functions {
 
 	explicit ui_util_functions(state& st, action_state& action_st, replay_state& replay_st) : replay_functions(st, action_st, replay_st) {}
@@ -568,7 +537,6 @@ struct ui_functions: ui_util_functions {
 	game_player player;
 	replay_state current_replay_state;
 	action_state current_action_state;
-	std::array<apm_t, 12> apm;
 	ui_functions(game_player player) : ui_util_functions(player.st(), current_action_state, current_replay_state), player(std::move(player)) {
 	}
 
@@ -749,7 +717,6 @@ struct ui_functions: ui_util_functions {
 	}
 
 	virtual void on_action(int owner, int action) override {
-		apm.at(owner).add_action(st.current_frame);
 	}
 
 	size_t view_width;
@@ -867,11 +834,6 @@ struct ui_functions: ui_util_functions {
 	a_vector<uint8_t> temporary_warp_texture_buffer;
 
 	void draw_image(const image_t* image, uint8_t* data, size_t data_pitch, size_t color_index) {
-
-		if (is_new_image(image)) {
-			image_draw_queue.push_back(image);
-			return;
-		}
 
 		xy map_pos = get_image_map_position(image);
 
@@ -1220,8 +1182,6 @@ struct ui_functions: ui_util_functions {
 
 	void draw_sprites(uint8_t* data, size_t data_pitch) {
 
-		image_draw_queue.clear();
-
 		sorted_sprites.clear();
 
 		auto screen_tile = screen_tile_bounds();
@@ -1396,240 +1356,10 @@ struct ui_functions: ui_util_functions {
 
 	int replay_frame = 0;
 
-	rect get_replay_slider_area() {
-#ifdef EMSCRIPTEN
-		return {};
-#endif
-		rect r;
-		int width = 192;
-		int height = 32;
-		r.from.x = (int)screen_width - 8 - width;
-		r.from.y = (int)screen_height - 8 - 128 - height;
-		r.to.x = r.from.x + width;
-		r.to.y = r.from.y + height;
-		if (r.from.x < 0 || r.from.y < 0) return {};
-		return r;
-	}
-
-	void draw_ui(uint8_t* data, size_t data_pitch) {
-		auto area = get_replay_slider_area();
-		if (area == rect{}) return;
-		if (replay_st.end_frame == 0) return;
-		fill_rectangle(data, data_pitch, area, 1);
-		line_rectangle(data, data_pitch, area, 12);
-
-		int button_w = 16;
-		int button_h = 32;
-		int ow = (area.to.x - area.from.x) - button_w;
-		int ox = replay_frame * ow / replay_st.end_frame;
-
-		if (st.current_frame != replay_frame) {
-			int cox = st.current_frame * ow / replay_st.end_frame;
-			line_rectangle(data, data_pitch, rect{area.from + xy(cox + button_w / 2, 0), area.from + xy(cox + button_w / 2 + 1, button_h)}, 50);
-		}
-
-		fill_rectangle(data, data_pitch, rect{area.from + xy(ox, 0), area.from + xy(ox, 0) + xy(button_w, button_h)}, 10);
-		line_rectangle(data, data_pitch, rect{area.from + xy(ox, 0), area.from + xy(ox, 0) + xy(button_w, button_h)}, 51);
-
-	}
-
 	virtual void draw_callback(uint8_t* data, size_t data_pitch) {
 	}
 
-	a_vector<const image_t*> image_draw_queue;
-
-	bool use_new_images = false;
-
-	bool new_images_index_loaded = false;
-
-	a_vector<char> grp_new_image_state = a_vector<char>((size_t)ImageTypes::None);
-	a_unordered_set<a_string> new_images_index;
 	string_table_data images_tbl;
-
-	a_vector<a_vector<std::unique_ptr<native_window_drawing::surface>>> new_images;
-	a_vector<a_vector<std::unique_ptr<native_window_drawing::surface>>> new_images_flipped;
-
-	bool is_new_image(const image_t* image) {
-		if (!use_new_images) return false;
-		if (!new_images_index_loaded) {
-			new_images_index_loaded = true;
-			async_read_file("index.txt", [this](const uint8_t* data, size_t len) {
-				if (!data) {
-					ui::log("failed to load index.txt :(\n");
-					return;
-				}
-				char* c = (char*)data;
-				char* e = (char*)data + len;
-				while (c != e && (*c == '\r' || *c =='\n' || *c == ' ')) ++c;
-				while (c != e) {
-					char* s = c;
-					while (c != e && *c != '\r' && *c !='\n' && *c != ' ') ++c;
-					a_string fn(s, c - s);
-					while (c != e && (*c == '\r' || *c =='\n' || *c == ' ')) ++c;
-					for (char& c : fn) {
-						if (c == '\\') c = '/';
-					}
-					if (!fn.empty() && fn.front() == '/') fn.erase(fn.begin());
-					if (!fn.empty() && fn.back() == '/') fn.erase(std::prev(fn.end()));
-					ui::log("index entry '%s'\n", fn);
-					new_images_index.insert(std::move(fn));
-				}
-			});
-		}
-		if (new_images_index.empty()) return false;
-		size_t index = image->grp - global_st.grps.data();
-		auto& state = grp_new_image_state.at(index);
-		if (state == 0) {
-			state = 2;
-			a_string fn = images_tbl.at(image->image_type->grp_filename_index);
-			for (char& c : fn) {
-				if (c == '\\') c = '/';
-			}
-			for (auto i = fn.rbegin(); i != fn.rend(); ++i) {
-				if (*i == '.') {
-					fn.erase(std::prev(i.base()), fn.end());
-				}
-				if (*i == '/') break;
-			}
-			if (!fn.empty() && fn.front() == '/') fn.erase(fn.begin());
-			fn = "unit/" + fn;
-			ui::log("checking '%s' (image %d, grp %u)\n", fn, (int)image->image_type->id, index);
-			if (new_images_index.count(fn)) {
-				size_t frames = image->grp->frames.size();
-				if (new_images.size() <= index) new_images.resize(index + 1);
-				new_images[index].resize(frames);
-				if (new_images_flipped.size() <= index) new_images_flipped.resize(index + 1);
-				new_images_flipped[index].resize(frames);
-				ui::log("loading %d frames...\n", frames);
-				auto frames_left = std::make_shared<size_t>(frames);
-				for (size_t i = 0; i != frames; ++i) {
-					a_string frame_fn = format("%s/%02u.png", fn, i);
-					async_read_file(frame_fn, [this, frame_fn, index, i, frames_left](const uint8_t* data, size_t len) {
-						if (!data) {
-							ui::log("failed to load '%s'\n", frame_fn);
-							return;
-						}
-						new_images.at(index).at(i) = native_window_drawing::load_image(data, len);
-						--*frames_left;
-						if (*frames_left == 0) {
-							grp_new_image_state.at(index) = 1;
-
-							ui::log("grp %d successfully loaded %d frames\n", index, new_images.at(index).size());
-						}
-					});
-				}
-			}
-		}
-		//ui::log("index %d state %d\n", index, state);
-		return state == 1;
-	}
-
-	native_window_drawing::surface* get_new_image_surface(const image_t* image, bool flipped) {
-		size_t index = image->grp - global_st.grps.data();
-		size_t frame = image->frame_index;
-		if (flipped) {
-			auto& r = new_images_flipped.at(index).at(frame);
-			if (!r) {
-				auto* s = new_images.at(index).at(frame).get();
-				if (!s) return nullptr;
-				r = flip_image(s);
-			}
-			return r.get();
-		} else {
-			return new_images.at(index).at(frame).get();
-		}
-	}
-
-	std::unique_ptr<native_window_drawing::surface> tmp_surface;
-
-	void draw_new_image(const image_t* image) {
-		xy map_pos = get_image_center_map_position(image);
-
-		int screen_x = map_pos.x - screen_pos.x;
-		int screen_y = map_pos.y - screen_pos.y;
-
-		auto* surface = get_new_image_surface(image, i_flag(image, image_t::flag_horizontally_flipped));
-		if (!surface) {
-			ui::log("ERROR: new image %d (grp %d) frame %d does not exist\n", (int)image->image_type->id, image->grp - global_st.grps.data(), image->frame_index);
-			return;
-		}
-
-		auto scale = 114_fp8;
-
-		size_t w = (fp8::integer(surface->w) * scale).integer_part();
-		size_t h = (fp8::integer(surface->w) * scale).integer_part();
-
-		size_t orig_w = w;
-		size_t orig_h = h;
-
-		screen_x -= w / 2;
-		screen_y -= w / 2;
-
-		if (screen_x >= (int)screen_width || screen_y >= (int)screen_height) return;
-		if (screen_x + (int)w <= 0 || screen_y + (int)h <= 0) return;
-
-		size_t offset_x = 0;
-		size_t offset_y = 0;
-		if (screen_x < 0) {
-			offset_x = -screen_x;
-			w += screen_x;
-			screen_x = 0;
-		}
-		if (screen_y < 0) {
-			offset_y = -screen_y;
-			h += screen_y;
-			screen_y = 0;
-		}
-
-		w = std::min(w, screen_width - screen_x);
-		h = std::min(h, screen_height - screen_y);
-
-		if (image->modifier == 10) {
-			if (!tmp_surface || (size_t)tmp_surface->w < orig_w || (size_t)tmp_surface->h < orig_h) {
-				tmp_surface = native_window_drawing::create_rgba_surface(orig_w, orig_h);
-			}
-			surface->set_blend_mode(native_window_drawing::blend_mode::none);
-			surface->blit_scaled(&*tmp_surface, 0, 0, orig_w, orig_h);
-
-			size_t src_pitch = tmp_surface->pitch / 4;
-			size_t dst_pitch = rgba_surface->pitch / 4;
-			uint32_t* src = (uint32_t*)tmp_surface->lock();
-			uint32_t* dst = (uint32_t*)rgba_surface->lock();
-
-			src += src_pitch * offset_y + offset_x;
-			dst += dst_pitch * screen_y + screen_x;
-
-			size_t src_skip = src_pitch - w;
-			size_t dst_skip = dst_pitch - w;
-
-			for (size_t y = h; y--;) {
-
-				for (size_t x = w; x--;) {
-					uint32_t s = *src;
-					uint32_t d = *dst;
-					if (s >> 24 >= 16) *dst = (d & 0xfefefe) / 2 | 0xff000000;
-					++src;
-					++dst;
-				}
-
-				src += src_skip;
-				dst += dst_skip;
-			}
-
-			tmp_surface->unlock();
-			rgba_surface->unlock();
-
-		} else {
-			surface->set_blend_mode(native_window_drawing::blend_mode::alpha);
-			surface->blit_scaled(&*rgba_surface, screen_x - offset_x, screen_y - offset_y, orig_w, orig_h);
-		}
-	}
-
-	void draw_image_queue() {
-		for (auto* image : image_draw_queue) {
-			draw_new_image(image);
-		}
-	}
 
 	fp8 game_speed = fp8::integer(1);
 
@@ -1682,7 +1412,6 @@ struct ui_functions: ui_util_functions {
 	}
 
 	bool is_moving_minimap = false;
-	bool is_moving_replay_slider = false;
 	bool is_paused = false;
 	bool is_drag_selecting = false;
 	bool is_dragging_screen = false;
@@ -1703,7 +1432,6 @@ struct ui_functions: ui_util_functions {
 		++fps_counter;
 
 		auto minimap_area = get_minimap_area();
-		auto replay_slider_area = get_replay_slider_area();
 
 		auto move_minimap = [&](int mouse_x, int mouse_y) {
 			if (mouse_x < minimap_area.from.x) mouse_x = minimap_area.from.x;
@@ -1722,26 +1450,6 @@ struct ui_functions: ui_util_functions {
 				if (e.mouse_y >= minimap_area.from.y && e.mouse_y < minimap_area.to.y) {
 					is_moving_minimap = true;
 					move_minimap(e.mouse_x, e.mouse_y);
-				}
-			}
-		};
-
-		auto move_replay_slider = [&](int mouse_x, int mouse_y) {
-			(void)mouse_y;
-			int x = mouse_x - replay_slider_area.from.x;
-			int button_w = 16;
-			x -= button_w / 2;
-			int ow = (replay_slider_area.to.x - replay_slider_area.from.x) - button_w;
-			if (x < 0) x = 0;
-			if (x >= ow) x = ow - 1;
-			replay_frame = x * replay_st.end_frame / ow;
-		};
-
-		auto check_move_replay_slider = [&](auto& e) {
-			if (e.mouse_x >= replay_slider_area.from.x && e.mouse_x < replay_slider_area.to.x) {
-				if (e.mouse_y >= replay_slider_area.from.y && e.mouse_y < replay_slider_area.to.y) {
-					is_moving_replay_slider = true;
-					move_replay_slider(e.mouse_x, e.mouse_y);
 				}
 			}
 		};
@@ -1813,8 +1521,7 @@ struct ui_functions: ui_util_functions {
 				case native_window::event_t::type_mouse_button_down:
 					if (e.button == 1) {
 						check_move_minimap(e);
-						check_move_replay_slider(e);
-						if (!is_moving_minimap && !is_moving_replay_slider) {
+						if (!is_moving_minimap) {
 							is_drag_selecting = true;
 							drag_select_from_x = e.mouse_x;
 							drag_select_from_y = e.mouse_y;
@@ -1829,7 +1536,6 @@ struct ui_functions: ui_util_functions {
 				case native_window::event_t::type_mouse_motion:
 					if (e.button_state & 1) {
 						if (is_moving_minimap) check_move_minimap(e);
-						if (is_moving_replay_slider) check_move_replay_slider(e);
 						if (is_drag_selecting) {
 							drag_select_to_x = e.mouse_x;
 							drag_select_to_y = e.mouse_y;
@@ -1846,7 +1552,6 @@ struct ui_functions: ui_util_functions {
 				case native_window::event_t::type_mouse_button_up:
 					if (e.button == 1) {
 						if (is_moving_minimap) is_moving_minimap = false;
-						if (is_moving_replay_slider) is_moving_replay_slider = false;
 						if (is_drag_selecting) {
 							end_drag_select(e.clicks >= 2 && e.clicks % 2 == 0);
 						}
@@ -1858,7 +1563,6 @@ struct ui_functions: ui_util_functions {
 					//if (e.sym == 'q') {
 					//	use_new_images = !use_new_images;
 					//}
-#ifndef EMSCRIPTEN
 					if (e.sym == ' ' || e.sym == 'p') {
 						is_paused = !is_paused;
 					}
@@ -1873,7 +1577,6 @@ struct ui_functions: ui_util_functions {
 						if (replay_frame < t) replay_frame = 0;
 						else replay_frame -= t;
 					}
-#endif
 					break;
 				}
 			}
@@ -1930,12 +1633,6 @@ struct ui_functions: ui_util_functions {
 				wnd.get_cursor_pos(&x, &y);
 				if (x != -1) move_minimap(x, y);
 			}
-			if (is_moving_replay_slider) {
-				int x = -1;
-				int y = -1;
-				wnd.get_cursor_pos(&x, &y);
-				if (x != -1) move_replay_slider(x, y);
-			}
 		}
 
 		if (screen_pos.y + view_height > game_st.map_height) screen_pos.y = game_st.map_height - view_height;
@@ -1951,14 +1648,11 @@ struct ui_functions: ui_util_functions {
 
 		if (draw_ui_elements) {
 			draw_minimap(data, indexed_surface->pitch);
-			draw_ui(data, indexed_surface->pitch);
 		}
 		indexed_surface->unlock();
 
 		rgba_surface->fill(0, 0, 0, 255);
 		indexed_surface->blit(&*rgba_surface, 0, 0);
-
-		draw_image_queue();
 
 		if (is_drag_selecting) {
 			uint32_t* data = (uint32_t*)rgba_surface->lock();
@@ -1986,18 +1680,6 @@ struct ui_functions: ui_util_functions {
 
 	template<typename cb_F>
 	void async_read_file(a_string filename, cb_F cb) {
-#ifdef EMSCRIPTEN
-		auto uptr = std::make_unique<cb_F>(std::move(cb));
-		auto f = [](void* ptr, uint8_t* data, size_t size) {
-			cb_F* cb_p = (cb_F*)ptr;
-			std::unique_ptr<cb_F> uptr(cb_p);
-			(*cb_p)(data, size);
-		};
-		auto* a = filename.c_str();
-		auto* b = (void(*)(void*, uint8_t*, size_t))f;
-		auto* c = uptr.release();
-		EM_ASM_({js_download_file($0, $1, $2);}, a, b, c);
-#else
 		filename = "data/" + filename;
 		FILE* f = fopen(filename.c_str(), "rb");
 		if (!f) {
@@ -2011,7 +1693,6 @@ struct ui_functions: ui_util_functions {
 			fclose(f);
 			cb(data.data(), data.size());
 		}
-#endif
 	}
 
 	std::array<tileset_image_data, 8> all_tileset_img;
@@ -2041,7 +1722,6 @@ struct ui_functions: ui_util_functions {
 	}
 
 	void reset() {
-		apm = {};
 		replay_frame = 0;
 		auto& game = *st.game;
 		st = state();
