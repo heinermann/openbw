@@ -38,6 +38,7 @@ namespace native_window {
 		window(window&&);
 		void destroy();
 		bool create(const char* title, int x, int y, int width, int height);
+		void set(void* handle);
 		void get_cursor_pos(int* x, int* y);
 		bool peek_message(event_t& e);
 		bool show_cursor(bool show);

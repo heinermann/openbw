@@ -19,26 +19,11 @@ using bwgame::ui::fatal_error;
 
 namespace native_window {
 
-bool sdl_initialized = false;
-void sdl_init() {
-	if (!sdl_initialized) {
-		auto original_handler = signal(SIGINT, SIG_DFL);
-		if (SDL_Init(SDL_INIT_VIDEO) == 0) {
-			sdl_initialized = true;
-		} else {
-			log("SDL_Init failed: %s\n", SDL_GetError());
-		}
-		signal(SIGINT, original_handler);
-	}
-}
-
-
 struct window_impl {
 
 	SDL_Window* window = nullptr;
 
 	window_impl() {
-		sdl_init();
 	}
 	~window_impl() {
 		if (window) SDL_DestroyWindow(window);
@@ -169,6 +154,10 @@ void window::destroy() {
 
 bool window::create(const char* title, int x, int y, int width, int height) {
 	return impl->create(title, x, y, width, height);
+}
+
+void window::set(void* handle) {
+  impl->window = (SDL_Window*)handle;
 }
 
 void window::get_cursor_pos(int* x, int* y) {
