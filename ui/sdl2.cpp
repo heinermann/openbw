@@ -277,7 +277,7 @@ std::unique_ptr<surface> create_rgba_surface(int width, int height) {
     amask = 0xff000000;
 #endif
     SDL_Surface* surf = SDL_CreateRGBSurface(0, width, height, 32, rmask, gmask, bmask, amask);
-	if (!surf) fatal_error("SDL_CreateRGBSurfaceWithFormat failed: %s", SDL_GetError());
+	if (!surf) fatal_error("SDL_CreateRGBSurface(0, %d, %d, 32, ...) failed: %s", width, height, SDL_GetError());
 	auto r = std::make_unique<sdl_surface>();
 	r->set(surf);
 	return std::unique_ptr<surface>(r.release());

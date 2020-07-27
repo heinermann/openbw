@@ -526,13 +526,14 @@ struct ui_functions: ui_util_functions {
 	bool create_window = true;
 	bool draw_ui_elements = true;
 
-	bool exit_on_close = true;
 	bool window_closed = false;
 
 	xy screen_pos;
 
 	size_t screen_width;
 	size_t screen_height;
+	size_t minimap_width = 256;
+	size_t minimap_height = 256;
 
 	game_player player;
 	replay_state current_replay_state;
@@ -1283,16 +1284,16 @@ struct ui_functions: ui_util_functions {
 	rect get_minimap_area() {
 		size_t minimap_width = std::max(game_st.map_tile_width, game_st.map_tile_height);
 		size_t minimap_height = std::max(game_st.map_tile_width, game_st.map_tile_height);
+
 		if (game_st.map_width < game_st.map_height) {
 			minimap_width = minimap_width * minimap_width * game_st.map_tile_width / (minimap_height * game_st.map_tile_height);
 		} else if (game_st.map_height < game_st.map_width) {
 			minimap_height = minimap_height * minimap_height * game_st.map_tile_height / (minimap_width* game_st.map_tile_width);
 		}
 		if (screen_width < minimap_width || screen_height < minimap_height) return {};
-		int map_screen_x = 4;
-		int map_screen_y = screen_height - 4 - minimap_height;
+		
 		rect area;
-		area.from = {map_screen_x, map_screen_y};
+		area.from = { 0, 0 };
 		area.to = area.from + xy{(int)minimap_width, (int)minimap_height};
 		return area;
 	}
@@ -1349,9 +1350,8 @@ struct ui_functions: ui_util_functions {
 
 		rect view_rect;
 		view_rect.from = area.from + xy(screen_pos.x / 32u, screen_pos.y / 32u);
-		view_rect.to = view_rect.from + xy((view_width + 31) / 32u, (view_height + 31) / 32u);
+		view_rect.to = view_rect.from + xy((view_width + 31) / 32u - 1, (view_height + 31) / 32u - 1);
 		line_rectangle(data, data_pitch, view_rect, 255);
-
 	}
 
 	int replay_frame = 0;
@@ -1365,7 +1365,9 @@ struct ui_functions: ui_util_functions {
 
 	std::unique_ptr<native_window_drawing::surface> window_surface;
 	std::unique_ptr<native_window_drawing::surface> indexed_surface;
+	std::unique_ptr<native_window_drawing::surface> minimap_indexed_surface;
 	std::unique_ptr<native_window_drawing::surface> rgba_surface;
+	std::unique_ptr<native_window_drawing::surface> minimap_rgba_surface;
 	native_window_drawing::palette* palette = nullptr;
 	std::chrono::high_resolution_clock clock;
 	std::chrono::high_resolution_clock::time_point last_draw;
@@ -1375,7 +1377,6 @@ struct ui_functions: ui_util_functions {
 	size_t scroll_speed_n = 0;
 
 	void resize(int width, int height) {
-		if (!wnd && create_window) wnd.create("OpenBW", 0, 0, width, height);
 		screen_width = width;
 		screen_height = height;
 		//view_scale = fp16::integer(1) - (fp16::integer(1) / 4);
@@ -1411,7 +1412,6 @@ struct ui_functions: ui_util_functions {
 		if (i != current_selection.end()) current_selection.erase(i);
 	}
 
-	bool is_moving_minimap = false;
 	bool is_paused = false;
 	bool is_drag_selecting = false;
 	bool is_dragging_screen = false;
@@ -1420,7 +1420,7 @@ struct ui_functions: ui_util_functions {
 	int drag_select_to_x = 0;
 	int drag_select_to_y = 0;
 	xy drag_screen_pos;
-
+	
 	void update() {
 		auto now = clock.now();
 
@@ -1430,29 +1430,6 @@ struct ui_functions: ui_util_functions {
 			fps_counter = 0;
 		}
 		++fps_counter;
-
-		auto minimap_area = get_minimap_area();
-
-		auto move_minimap = [&](int mouse_x, int mouse_y) {
-			if (mouse_x < minimap_area.from.x) mouse_x = minimap_area.from.x;
-			else if (mouse_x >= minimap_area.to.x) mouse_x = minimap_area.to.x - 1;
-			if (mouse_y < minimap_area.from.y) mouse_y = minimap_area.from.y;
-			else if (mouse_y >= minimap_area.to.y) mouse_y = minimap_area.to.y - 1;
-			int x = mouse_x - minimap_area.from.x;
-			int y = mouse_y - minimap_area.from.y;
-			x = x * game_st.map_tile_width / (minimap_area.to.x - minimap_area.from.x);
-			y = y * game_st.map_tile_height / (minimap_area.to.y - minimap_area.from.y);
-			screen_pos = xy(32 * x - view_width / 2, 32 * y - view_height / 2);
-		};
-
-		auto check_move_minimap = [&](auto& e) {
-			if (e.mouse_x >= minimap_area.from.x && e.mouse_x < minimap_area.to.x) {
-				if (e.mouse_y >= minimap_area.from.y && e.mouse_y < minimap_area.to.y) {
-					is_moving_minimap = true;
-					move_minimap(e.mouse_x, e.mouse_y);
-				}
-			}
-		};
 
 		auto end_drag_select = [&](bool double_clicked) {
 			bool shift = wnd.get_key_state(225) || wnd.get_key_state(229);
@@ -1512,35 +1489,25 @@ struct ui_functions: ui_util_functions {
 			while (wnd.peek_message(e)) {
 				switch (e.type) {
 				case native_window::event_t::type_quit:
-					if (exit_on_close) std::exit(0);
-					else window_closed = true;
+					window_closed = true;
 					break;
 				case native_window::event_t::type_resize:
 					resize(e.width, e.height);
 					break;
 				case native_window::event_t::type_mouse_button_down:
 					if (e.button == 1) {
-						check_move_minimap(e);
-						if (!is_moving_minimap) {
-							is_drag_selecting = true;
-							drag_select_from_x = e.mouse_x;
-							drag_select_from_y = e.mouse_y;
-							drag_select_to_x = e.mouse_x;
-							drag_select_to_y = e.mouse_y;
-						}
-					} else if (e.button == 3) {
-						is_dragging_screen = true;
-						drag_screen_pos = screen_pos + xy((fp16::integer(e.mouse_x) / view_scale).integer_part(), (fp16::integer(e.mouse_y) / view_scale).integer_part());
+					  is_drag_selecting = true;
+					  drag_select_from_x = e.mouse_x;
+					  drag_select_from_y = e.mouse_y;
+					  drag_select_to_x = e.mouse_x;
+					  drag_select_to_y = e.mouse_y;
+					} else if (e.button == 2) {
+					  is_dragging_screen = true;
+					  drag_screen_pos = screen_pos + xy((fp16::integer(e.mouse_x) / view_scale).integer_part(), (fp16::integer(e.mouse_y) / view_scale).integer_part());
 					}
 					break;
 				case native_window::event_t::type_mouse_motion:
-					if (e.button_state & 1) {
-						if (is_moving_minimap) check_move_minimap(e);
-						if (is_drag_selecting) {
-							drag_select_to_x = e.mouse_x;
-							drag_select_to_y = e.mouse_y;
-						}
-					} else if (e.button_state & 4) {
+					if (e.button_state & 2) {
 						if (is_dragging_screen) {
 							screen_pos = drag_screen_pos - xy((fp16::integer(e.mouse_x) / view_scale).integer_part(), (fp16::integer(e.mouse_y) / view_scale).integer_part());
 							//screen_pos -= xy((fp16::integer(e.mouse_x - drag_screen_x) / view_scale).integer_part(), (fp16::integer(e.mouse_y - drag_screen_y) / view_scale).integer_part());
@@ -1551,18 +1518,14 @@ struct ui_functions: ui_util_functions {
 					break;
 				case native_window::event_t::type_mouse_button_up:
 					if (e.button == 1) {
-						if (is_moving_minimap) is_moving_minimap = false;
 						if (is_drag_selecting) {
 							end_drag_select(e.clicks >= 2 && e.clicks % 2 == 0);
 						}
-					} else if (e.button == 3) {
+					} else if (e.button == 2) {
 						is_dragging_screen = false;
 					}
 					break;
 				case native_window::event_t::type_key_down:
-					//if (e.sym == 'q') {
-					//	use_new_images = !use_new_images;
-					//}
 					if (e.sym == ' ' || e.sym == 'p') {
 						is_paused = !is_paused;
 					}
@@ -1603,37 +1566,30 @@ struct ui_functions: ui_util_functions {
 			}
 		}
 
-		if (wnd) {
-			auto input_poll_speed = std::chrono::milliseconds(12);
-
-			auto input_poll_t = now - last_input_poll;
-			while (input_poll_t >= input_poll_speed) {
-				if (input_poll_t >= input_poll_speed * 20) last_input_poll = now - input_poll_speed;
-				else last_input_poll += input_poll_speed;
-				std::array<int, 6> scroll_speeds = {2, 2, 4, 6, 6, 8};
-
-				if (!is_drag_selecting) {
-					int scroll_speed = scroll_speeds[scroll_speed_n];
-					auto prev_screen_pos = screen_pos;
-					if (wnd.get_key_state(81)) screen_pos.y += scroll_speed;
-					else if (wnd.get_key_state(82)) screen_pos.y -= scroll_speed;
-					if (wnd.get_key_state(79)) screen_pos.x += scroll_speed;
-					else if (wnd.get_key_state(80)) screen_pos.x -= scroll_speed;
-					if (screen_pos != prev_screen_pos) {
-						if (scroll_speed_n != scroll_speeds.size() - 1) ++scroll_speed_n;
-					} else scroll_speed_n = 0;
-				}
-
-				input_poll_t = now - last_input_poll;
-			}
-
-			if (is_moving_minimap) {
-				int x = -1;
-				int y = -1;
-				wnd.get_cursor_pos(&x, &y);
-				if (x != -1) move_minimap(x, y);
-			}
-		}
+		//if (wnd) {
+		//	auto input_poll_speed = std::chrono::milliseconds(12);
+		//
+		//	auto input_poll_t = now - last_input_poll;
+		//	while (input_poll_t >= input_poll_speed) {
+		//		if (input_poll_t >= input_poll_speed * 20) last_input_poll = now - input_poll_speed;
+		//		else last_input_poll += input_poll_speed;
+		//		std::array<int, 6> scroll_speeds = {2, 2, 4, 6, 6, 8};
+		//
+		//		if (!is_drag_selecting) {
+		//			int scroll_speed = scroll_speeds[scroll_speed_n];
+		//			auto prev_screen_pos = screen_pos;
+		//			if (wnd.get_key_state(81)) screen_pos.y += scroll_speed;
+		//			else if (wnd.get_key_state(82)) screen_pos.y -= scroll_speed;
+		//			if (wnd.get_key_state(79)) screen_pos.x += scroll_speed;
+		//			else if (wnd.get_key_state(80)) screen_pos.x -= scroll_speed;
+		//			if (screen_pos != prev_screen_pos) {
+		//				if (scroll_speed_n != scroll_speeds.size() - 1) ++scroll_speed_n;
+		//			} else scroll_speed_n = 0;
+		//		}
+		//
+		//		input_poll_t = now - last_input_poll;
+		//	}
+		//}
 
 		if (screen_pos.y + view_height > game_st.map_height) screen_pos.y = game_st.map_height - view_height;
 		if (screen_pos.y < 0) screen_pos.y = 0;
@@ -1646,9 +1602,6 @@ struct ui_functions: ui_util_functions {
 
 		draw_callback(data, indexed_surface->pitch);
 
-		if (draw_ui_elements) {
-			draw_minimap(data, indexed_surface->pitch);
-		}
 		indexed_surface->unlock();
 
 		rgba_surface->fill(0, 0, 0, 255);
@@ -1670,6 +1623,80 @@ struct ui_functions: ui_util_functions {
 			rgba_surface->blit(&*window_surface, 0, 0);
 			wnd.update_surface();
 		}
+	}
+
+	void resize_minimap(int width, int height) {
+	  minimap_width = width;
+	  minimap_height = height;
+	  minimap_indexed_surface.reset();
+	  minimap_rgba_surface.reset();
+	}
+
+	void move_minimap(int mouse_x, int mouse_y) {
+	  auto minimap_area = get_minimap_area();
+	  if (minimap_area.to.x == 0 || minimap_area.to.y == 0) return;
+	  
+	  if (mouse_x < minimap_area.from.x) mouse_x = minimap_area.from.x;
+	  else if (mouse_x >= minimap_area.to.x) mouse_x = minimap_area.to.x - 1;
+	  
+	  if (mouse_y < minimap_area.from.y) mouse_y = minimap_area.from.y;
+	  else if (mouse_y >= minimap_area.to.y) mouse_y = minimap_area.to.y - 1;
+	  
+	  int x = mouse_x - minimap_area.from.x;
+	  int y = mouse_y - minimap_area.from.y;
+	  x = x * game_st.map_tile_width / (minimap_area.to.x - minimap_area.from.x);
+	  y = y * game_st.map_tile_height / (minimap_area.to.y - minimap_area.from.y);
+	  screen_pos = xy(32 * x - view_width / 2, 32 * y - view_height / 2);
+
+	  if (screen_pos.y + view_height > game_st.map_height) screen_pos.y = game_st.map_height - view_height;
+	  if (screen_pos.y < 0) screen_pos.y = 0;
+	  if (screen_pos.x + view_width > game_st.map_width) screen_pos.x = game_st.map_width - view_width;
+	  if (screen_pos.x < 0) screen_pos.x = 0;
+	}
+
+	void process_minimap_event(const native_window::event_t &e) {
+	  switch (e.type) {
+	  case native_window::event_t::type_resize:
+		resize_minimap(e.width, e.height);
+		break;
+	  case native_window::event_t::type_mouse_button_down:
+		if (e.button == 1) {
+		  move_minimap(e.mouse_x, e.mouse_y);
+		}
+		break;
+	  case native_window::event_t::type_mouse_motion:
+		if (e.button_state & 1) {
+		  move_minimap(e.mouse_x, e.mouse_y);
+		}
+		break;
+	  case native_window::event_t::type_mouse_button_up:
+		break;
+	  }
+	}
+
+	void update_minimap() {
+	  if (!minimap_indexed_surface || !minimap_rgba_surface) {
+		minimap_rgba_surface = native_window_drawing::create_rgba_surface(minimap_width, minimap_height);
+		minimap_indexed_surface = native_window_drawing::convert_to_8_bit_indexed(&*minimap_rgba_surface);
+		if (!palette) set_image_data();
+		minimap_indexed_surface->set_palette(palette);
+
+		minimap_indexed_surface->set_blend_mode(native_window_drawing::blend_mode::none);
+		minimap_rgba_surface->set_blend_mode(native_window_drawing::blend_mode::none);
+		minimap_rgba_surface->set_alpha(0);
+	  }
+
+	  uint8_t* data = (uint8_t*)minimap_indexed_surface->lock();
+	  draw_minimap(data, minimap_indexed_surface->pitch);
+	  minimap_indexed_surface->unlock();
+
+	  minimap_rgba_surface->fill(0, 0, 0, 255);
+	  minimap_indexed_surface->blit(&*minimap_rgba_surface, 0, 0);
+	}
+
+	void minimap_blit_to(native_window_drawing::surface *dst)
+	{
+	  minimap_rgba_surface->blit(dst, 0, 0);
 	}
 
 	std::tuple<int, int, uint32_t*> get_rgba_buffer() {
