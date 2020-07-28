@@ -181,6 +181,15 @@ void load_image_data(image_data& img, load_data_file_F&& load_data_file) {
 
 }
 
+grp_t cmdicons;
+
+template<typename load_data_file_F>
+void load_cmdicons(load_data_file_F&& load_data_file) {
+  a_vector<uint8_t> grp_data;
+  load_data_file(grp_data, "unit/cmdbtns/cmdicons.grp");
+  cmdicons = read_grp(data_loading::data_reader_le(grp_data.data(), grp_data.data() + grp_data.size()));
+}
+
 template<typename load_data_file_F>
 void load_tileset_image_data(tileset_image_data& img, size_t tileset_index, load_data_file_F&& load_data_file) {
 	using namespace data_loading;
@@ -404,6 +413,12 @@ void draw_frame_textured(const grp_t::frame_t& frame, const uint8_t* texture, bo
 	}
 }
 
+void draw_icon(int icon_id, uint8_t* dst, size_t pitch, size_t offset_x, size_t offset_y, size_t width, size_t height) {
+  if (icon_id >= cmdicons.frames.size()) return;
+
+  draw_frame(cmdicons.frames[icon_id], false, dst, pitch, offset_x, offset_y, width, height);
+}
+
 struct ui_util_functions: replay_functions {
 
 	explicit ui_util_functions(state& st, action_state& action_st, replay_state& replay_st) : replay_functions(st, action_st, replay_st) {}
@@ -532,8 +547,6 @@ struct ui_functions: ui_util_functions {
 
 	size_t screen_width;
 	size_t screen_height;
-	size_t minimap_width = 256;
-	size_t minimap_height = 256;
 
 	game_player player;
 	replay_state current_replay_state;
@@ -1298,8 +1311,11 @@ struct ui_functions: ui_util_functions {
 		return area;
 	}
 
-	void draw_minimap(uint8_t* data, size_t data_pitch) {
+	void draw_minimap(uint8_t* data, size_t data_pitch, size_t surface_width, size_t surface_height) {
 		auto area = get_minimap_area();
+		if (area.to.x > surface_width) return;
+		if (area.to.y > surface_height) return;
+
 		size_t minimap_width = area.to.x - area.from.x;
 		size_t minimap_height = area.to.y - area.from.y;
 		if (minimap_width != game_st.map_tile_width) return;
@@ -1354,6 +1370,11 @@ struct ui_functions: ui_util_functions {
 		line_rectangle(data, data_pitch, view_rect, 255);
 	}
 
+	uint32_t* get_minimap_palette() {
+	  if (!palette) set_image_data();
+	  return reinterpret_cast<uint32_t*>(palette_colors);
+	}
+
 	int replay_frame = 0;
 
 	virtual void draw_callback(uint8_t* data, size_t data_pitch) {
@@ -1365,10 +1386,9 @@ struct ui_functions: ui_util_functions {
 
 	std::unique_ptr<native_window_drawing::surface> window_surface;
 	std::unique_ptr<native_window_drawing::surface> indexed_surface;
-	std::unique_ptr<native_window_drawing::surface> minimap_indexed_surface;
 	std::unique_ptr<native_window_drawing::surface> rgba_surface;
-	std::unique_ptr<native_window_drawing::surface> minimap_rgba_surface;
 	native_window_drawing::palette* palette = nullptr;
+	native_window_drawing::color palette_colors[256];
 	std::chrono::high_resolution_clock clock;
 	std::chrono::high_resolution_clock::time_point last_draw;
 	std::chrono::high_resolution_clock::time_point last_input_poll;
@@ -1514,7 +1534,18 @@ struct ui_functions: ui_util_functions {
 						}
 					}
 
-					if (is_drag_selecting && ~e.button_state & 1) end_drag_select(false);
+					if (e.button_state & 1) {
+					  if (!is_drag_selecting) {
+						is_drag_selecting = true;
+						drag_select_from_x = e.mouse_x;
+						drag_select_from_y = e.mouse_y;
+					  }
+					  drag_select_to_x = e.mouse_x;
+					  drag_select_to_y = e.mouse_y;
+					}
+					else {
+					  if (is_drag_selecting) end_drag_select(false);
+					}
 					break;
 				case native_window::event_t::type_mouse_button_up:
 					if (e.button == 1) {
@@ -1566,30 +1597,30 @@ struct ui_functions: ui_util_functions {
 			}
 		}
 
-		//if (wnd) {
-		//	auto input_poll_speed = std::chrono::milliseconds(12);
-		//
-		//	auto input_poll_t = now - last_input_poll;
-		//	while (input_poll_t >= input_poll_speed) {
-		//		if (input_poll_t >= input_poll_speed * 20) last_input_poll = now - input_poll_speed;
-		//		else last_input_poll += input_poll_speed;
-		//		std::array<int, 6> scroll_speeds = {2, 2, 4, 6, 6, 8};
-		//
-		//		if (!is_drag_selecting) {
-		//			int scroll_speed = scroll_speeds[scroll_speed_n];
-		//			auto prev_screen_pos = screen_pos;
-		//			if (wnd.get_key_state(81)) screen_pos.y += scroll_speed;
-		//			else if (wnd.get_key_state(82)) screen_pos.y -= scroll_speed;
-		//			if (wnd.get_key_state(79)) screen_pos.x += scroll_speed;
-		//			else if (wnd.get_key_state(80)) screen_pos.x -= scroll_speed;
-		//			if (screen_pos != prev_screen_pos) {
-		//				if (scroll_speed_n != scroll_speeds.size() - 1) ++scroll_speed_n;
-		//			} else scroll_speed_n = 0;
-		//		}
-		//
-		//		input_poll_t = now - last_input_poll;
-		//	}
-		//}
+		if (wnd) {
+			auto input_poll_speed = std::chrono::milliseconds(12);
+		
+			auto input_poll_t = now - last_input_poll;
+			while (input_poll_t >= input_poll_speed) {
+				if (input_poll_t >= input_poll_speed * 20) last_input_poll = now - input_poll_speed;
+				else last_input_poll += input_poll_speed;
+				std::array<int, 6> scroll_speeds = {2, 2, 4, 6, 6, 8};
+		
+				if (!is_drag_selecting) {
+					int scroll_speed = scroll_speeds[scroll_speed_n];
+					auto prev_screen_pos = screen_pos;
+					if (wnd.get_key_state(81)) screen_pos.y += scroll_speed;
+					else if (wnd.get_key_state(82)) screen_pos.y -= scroll_speed;
+					if (wnd.get_key_state(79)) screen_pos.x += scroll_speed;
+					else if (wnd.get_key_state(80)) screen_pos.x -= scroll_speed;
+					if (screen_pos != prev_screen_pos) {
+						if (scroll_speed_n != scroll_speeds.size() - 1) ++scroll_speed_n;
+					} else scroll_speed_n = 0;
+				}
+		
+				input_poll_t = now - last_input_poll;
+			}
+		}
 
 		if (screen_pos.y + view_height > game_st.map_height) screen_pos.y = game_st.map_height - view_height;
 		if (screen_pos.y < 0) screen_pos.y = 0;
@@ -1609,13 +1640,13 @@ struct ui_functions: ui_util_functions {
 
 		if (is_drag_selecting) {
 			uint32_t* data = (uint32_t*)rgba_surface->lock();
-			if (is_drag_selecting) {
-				auto r = rect{{drag_select_from_x, drag_select_from_y}, {drag_select_to_x, drag_select_to_y}};
-				if (r.from.x > r.to.x) std::swap(r.from.x, r.to.x);
-				if (r.from.y > r.to.y) std::swap(r.from.y, r.to.y);
 
-				line_rectangle_rgba(data, rgba_surface->pitch / 4, r, 0xff18fc10);
-			}
+			auto r = rect{{drag_select_from_x, drag_select_from_y}, {drag_select_to_x, drag_select_to_y}};
+			if (r.from.x > r.to.x) std::swap(r.from.x, r.to.x);
+			if (r.from.y > r.to.y) std::swap(r.from.y, r.to.y);
+
+			line_rectangle_rgba(data, rgba_surface->pitch / 4, r, 0xff18fc10);
+
 			rgba_surface->unlock();
 		}
 
@@ -1623,13 +1654,6 @@ struct ui_functions: ui_util_functions {
 			rgba_surface->blit(&*window_surface, 0, 0);
 			wnd.update_surface();
 		}
-	}
-
-	void resize_minimap(int width, int height) {
-	  minimap_width = width;
-	  minimap_height = height;
-	  minimap_indexed_surface.reset();
-	  minimap_rgba_surface.reset();
 	}
 
 	void move_minimap(int mouse_x, int mouse_y) {
@@ -1652,51 +1676,6 @@ struct ui_functions: ui_util_functions {
 	  if (screen_pos.y < 0) screen_pos.y = 0;
 	  if (screen_pos.x + view_width > game_st.map_width) screen_pos.x = game_st.map_width - view_width;
 	  if (screen_pos.x < 0) screen_pos.x = 0;
-	}
-
-	void process_minimap_event(const native_window::event_t &e) {
-	  switch (e.type) {
-	  case native_window::event_t::type_resize:
-		resize_minimap(e.width, e.height);
-		break;
-	  case native_window::event_t::type_mouse_button_down:
-		if (e.button == 1) {
-		  move_minimap(e.mouse_x, e.mouse_y);
-		}
-		break;
-	  case native_window::event_t::type_mouse_motion:
-		if (e.button_state & 1) {
-		  move_minimap(e.mouse_x, e.mouse_y);
-		}
-		break;
-	  case native_window::event_t::type_mouse_button_up:
-		break;
-	  }
-	}
-
-	void update_minimap() {
-	  if (!minimap_indexed_surface || !minimap_rgba_surface) {
-		minimap_rgba_surface = native_window_drawing::create_rgba_surface(minimap_width, minimap_height);
-		minimap_indexed_surface = native_window_drawing::convert_to_8_bit_indexed(&*minimap_rgba_surface);
-		if (!palette) set_image_data();
-		minimap_indexed_surface->set_palette(palette);
-
-		minimap_indexed_surface->set_blend_mode(native_window_drawing::blend_mode::none);
-		minimap_rgba_surface->set_blend_mode(native_window_drawing::blend_mode::none);
-		minimap_rgba_surface->set_alpha(0);
-	  }
-
-	  uint8_t* data = (uint8_t*)minimap_indexed_surface->lock();
-	  draw_minimap(data, minimap_indexed_surface->pitch);
-	  minimap_indexed_surface->unlock();
-
-	  minimap_rgba_surface->fill(0, 0, 0, 255);
-	  minimap_indexed_surface->blit(&*minimap_rgba_surface, 0, 0);
-	}
-
-	void minimap_blit_to(native_window_drawing::surface *dst)
-	{
-	  minimap_rgba_surface->blit(dst, 0, 0);
 	}
 
 	std::tuple<int, int, uint32_t*> get_rgba_buffer() {
@@ -1737,7 +1716,6 @@ struct ui_functions: ui_util_functions {
 
 		if (!palette) palette = native_window_drawing::new_palette();
 
-		native_window_drawing::color palette_colors[256];
 		if (tileset_img.wpe.size() != 256 * 4) error("wpe size invalid (%d)", tileset_img.wpe.size());
 		for (size_t i = 0; i != 256; ++i) {
 			palette_colors[i].r = tileset_img.wpe[4 * i + 0];
